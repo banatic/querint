@@ -12,6 +12,7 @@ const ENTRY = -9;
 const W = 4.5; // block width
 const GAP = 1.5;
 const STOP = 19; // arm's left edge
+const LINE = STOP - 1.5 - W; // where the front block waits
 const SPRING = 230; // arm, 1/s²
 const DAMP = 11;
 const BOUNCE = 0.3; // energy kept when the arm hits its stop
@@ -79,11 +80,13 @@ export class Gate {
     // Front-most first, so each block can follow the one ahead.
     this.parts.sort((a, b) => b.x - a.x);
     this.parts.forEach((q, i) => {
+      // A block that can no longer brake before the line carries on instead of snapping back.
+      if (blocking && !q.through && q.x + (q.v * q.v) / (2 * BRAKE) > LINE + 0.5) q.through = true;
       let limit = i > 0 ? this.parts[i - 1].x - (W + GAP) : Infinity;
-      if (blocking && !q.through) limit = Math.min(limit, STOP - 1.5 - W);
+      if (blocking && !q.through) limit = Math.min(limit, LINE);
       const want = Math.min(SPEED, Math.sqrt(2 * BRAKE * Math.max(0, limit - q.x)));
-      q.v += Math.max(-BRAKE * dt, Math.min(ACCEL * dt, want - q.v));
-      q.x = Math.min(q.x + q.v * dt, limit);
+      q.v = Math.max(0, q.v + Math.max(-BRAKE * dt, Math.min(ACCEL * dt, want - q.v)));
+      q.x = Math.max(q.x, Math.min(q.x + q.v * dt, limit));
       if (q.x + W > STOP) q.through = true;
     });
     this.parts = this.parts.filter((q) => {

@@ -56,19 +56,18 @@ unsafe fn read_pwstr(p: PWSTR) -> String {
     }
 }
 
-pub fn list_printers() -> Vec<Printer> {
+/// None when the spooler couldn't be read.
+pub fn list_printers() -> Option<Vec<Printer>> {
     let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
     let mut needed = 0u32;
     let mut count = 0u32;
     unsafe {
-        let _ = EnumPrintersW(flags, PCWSTR::null(), 2, None, &mut needed, &mut count);
+        let sized = EnumPrintersW(flags, PCWSTR::null(), 2, None, &mut needed, &mut count);
         if needed == 0 {
-            return Vec::new();
+            return sized.ok().map(|_| Vec::new());
         }
         let mut buf = aligned_buf(needed);
-        if EnumPrintersW(flags, PCWSTR::null(), 2, Some(as_bytes(&mut buf)), &mut needed, &mut count).is_err() {
-            return Vec::new();
-        }
+        EnumPrintersW(flags, PCWSTR::null(), 2, Some(as_bytes(&mut buf)), &mut needed, &mut count).ok()?;
         let infos = std::slice::from_raw_parts(buf.as_ptr() as *const PRINTER_INFO_2W, count as usize);
         infos
             .iter()
@@ -77,7 +76,8 @@ pub fn list_printers() -> Vec<Printer> {
                 port: read_pwstr(i.pPortName),
                 paused: i.Status & PRINTER_STATUS_PAUSED != 0,
             })
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 }
 
@@ -128,19 +128,18 @@ pub fn control_job(printer: &str, job: u32, cmd: JobCommand) -> bool {
     unsafe { SetJobW(h.0, job, 0, None, command).as_bool() }
 }
 
-pub fn list_jobs(printer: &str) -> Vec<Job> {
-    let Some(h) = open(printer, false) else { return Vec::new() };
+/// None when the queue couldn't be read, which callers must not mistake for an empty queue.
+pub fn list_jobs(printer: &str) -> Option<Vec<Job>> {
+    let h = open(printer, false)?;
     let mut needed = 0u32;
     let mut count = 0u32;
     unsafe {
-        let _ = EnumJobsW(h.0, 0, 512, 2, None, &mut needed, &mut count);
+        let sized = EnumJobsW(h.0, 0, 512, 2, None, &mut needed, &mut count);
         if needed == 0 {
-            return Vec::new();
+            return sized.ok().map(|_| Vec::new());
         }
         let mut buf = aligned_buf(needed);
-        if EnumJobsW(h.0, 0, 512, 2, Some(as_bytes(&mut buf)), &mut needed, &mut count).is_err() {
-            return Vec::new();
-        }
+        EnumJobsW(h.0, 0, 512, 2, Some(as_bytes(&mut buf)), &mut needed, &mut count).ok()?;
         let infos = std::slice::from_raw_parts(buf.as_ptr() as *const JOB_INFO_2W, count as usize);
         infos
             .iter()
@@ -157,7 +156,8 @@ pub fn list_jobs(printer: &str) -> Vec<Job> {
                     submitted: local,
                 }
             })
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 }
 

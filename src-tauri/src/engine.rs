@@ -79,8 +79,10 @@ impl Engine {
     }
 
     pub fn tick(&mut self) {
+        // Acting on a failed read could hand back a queue that still holds jobs; wait for the next tick.
+        let Some(list) = spooler::list_printers() else { return };
         let mut cache = std::mem::take(&mut self.port_cache);
-        self.printers = spooler::list_printers()
+        self.printers = list
             .into_iter()
             .filter_map(|p| {
                 let host = spooler::port_host(&p.port, &mut cache)?;
@@ -98,8 +100,8 @@ impl Engine {
             .collect();
 
         for (name, paused) in names {
-            let jobs: Vec<spooler::Job> =
-                spooler::list_jobs(&name).into_iter().filter(|j| j.status & JOB_HIDDEN == 0).collect();
+            let Some(jobs) = spooler::list_jobs(&name) else { continue };
+            let jobs: Vec<spooler::Job> = jobs.into_iter().filter(|j| j.status & JOB_HIDDEN == 0).collect();
             let exists = |id: &u32| jobs.iter().any(|j| j.id == *id);
             let released = self.released.entry(name.clone()).or_default();
             released.retain(exists);
@@ -322,7 +324,7 @@ mod tests {
     }
 
     fn printer_paused() -> bool {
-        spooler::list_printers().into_iter().find(|p| p.name == PRINTER).unwrap().paused
+        spooler::list_printers().unwrap().into_iter().find(|p| p.name == PRINTER).unwrap().paused
     }
 
     fn tick_until(e: &mut Engine, secs: u64, mut done: impl FnMut(&Engine) -> bool) -> bool {

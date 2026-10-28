@@ -30,11 +30,11 @@ const ICON = {
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-/** Spooler document names often carry the app name and the file extension. */
+/** Spooler document names often carry the app name and the file extension. Web page titles like "naver.com" stay. */
 const docName = (s: string) =>
   s
     .replace(/^Microsoft (Word|Excel|PowerPoint) - /, "")
-    .replace(/\.[A-Za-z0-9]{2,5}$/, "")
+    .replace(/\.(hwpx?|hwt|cell|show|pdf|docx?|xlsx?|xlsm|pptx?|txt|rtf|csv|jpe?g|png|gif|bmp|tiff?|html?)$/i, "")
     .trim() || s;
 
 const META: Record<JobState, string> = { held: "", queued: "대기", printing: "인쇄 중", waiting: "연결 대기" };
@@ -65,7 +65,7 @@ function jobRow(p: Printer, j: Job): string {
     </div>`;
 }
 
-function printerBlock(p: Printer): string {
+function printerBlock(p: Printer, managed: boolean): string {
   const active = p.jobs.some((j) => j.state !== "held");
   const data = `data-printer="${esc(p.name)}"`;
   const right = active ? `<button class="stop" data-act="stop" ${data}>${ICON.stop}정지</button>` : "";
@@ -75,7 +75,7 @@ function printerBlock(p: Printer): string {
       ${p.offline ? `<span class="tag">오프라인</span>` : ""}
       <span style="flex-grow: 1"></span>
       ${right}
-      <span class="gate-slot" ${data}></span>
+      ${managed ? `<span class="gate-slot" ${data}></span>` : ""}
     </div>
     ${p.jobs.map((j) => jobRow(p, j)).join("")}
     <div class="sep"></div>`;
@@ -85,9 +85,23 @@ function check(on: boolean): string {
   return `<span class="check${on ? " on" : ""}">${ICON.check}</span>`;
 }
 
+// A re-render between press and release would swap the button out and drop the click.
+let pressed = false;
+let stale = false;
+panel.addEventListener("pointerdown", () => (pressed = true));
+const unpress = () => {
+  pressed = false;
+  if (stale) setTimeout(render); // after the click has fired
+};
+for (const ev of ["pointerup", "pointercancel", "blur"]) window.addEventListener(ev, unpress);
+
 function render() {
   if (!snap) return;
+  if (pressed) return void (stale = true);
+  stale = false;
   const s = snap;
+  const managed = new Set(s.choices.filter((c) => c.managed).map((c) => c.name));
+  const scroll = panel.querySelector(".list")?.scrollTop ?? 0;
   if (!s.choices.some((c) => c.managed)) settingsOpen = true;
 
   const settings = settingsOpen
@@ -124,7 +138,7 @@ function render() {
     }
     <div class="sep"></div>
     <div class="list">
-      ${s.printers.map(printerBlock).join("")}
+      ${s.printers.map((p) => printerBlock(p, managed.has(p.name))).join("")}
       <button class="item" data-act="settings" aria-expanded="${settingsOpen}">
         <span class="grow">설정</span><span class="chev${settingsOpen ? " open" : ""}">${ICON.chevron}</span>
       </button>
@@ -135,6 +149,7 @@ function render() {
 
   mountGates(panel, new Map(s.printers.map((p) => [p.name, p.hold])));
   invoke("fit", { height: panel.getBoundingClientRect().height });
+  panel.querySelector(".list")!.scrollTop = scroll;
 }
 
 panel.addEventListener("click", (e) => {
