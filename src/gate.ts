@@ -2,11 +2,17 @@
  * Barrier-arm hold control. Small blocks stream through a lane; with hold on the
  * arm drops, blocks that already reached it pass, the rest brake and queue up.
  * The element outlives re-renders so its motion never restarts.
+ *
+ * Every lane runs on one shared conveyor: evenly spaced slots moving at SPEED,
+ * driven by a single clock, so blocks line up across printers. A block freed
+ * from a queue eases onto the nearest free slot.
  */
 
 const SPEED = 26; // cruise, px/s
 const ACCEL = 90; // px/s²
 const BRAKE = 160; // px/s²
+const PITCH = 11; // slot spacing, px
+const CATCH = 4; // how hard a block closes on its slot, 1/s
 const TRACK = 40;
 const ENTRY = -9;
 const W = 4.5; // block width
@@ -17,14 +23,20 @@ const SPRING = 230; // arm, 1/s²
 const DAMP = 11;
 const BOUNCE = 0.3; // energy kept when the arm hits its stop
 
-type Part = { x: number; v: number; through: boolean; node: HTMLElement };
+/** Slot n sits at conveyor(t) - n * PITCH. */
+const conveyor = (t: number) => SPEED * t;
+
+/** `slot` is null while queued; the block picks one again once it moves freely. */
+type Part = { x: number; v: number; through: boolean; slot: number | null; node: HTMLElement };
+
+let clock = 0; // shared by all gates, advances only while animating
 
 export class Gate {
   readonly el: HTMLButtonElement;
   private label: HTMLElement;
   private lane: HTMLElement;
   private parts: Part[] = [];
-  private spawnIn = 0;
+  private spawned = -Infinity; // last slot that reached the entry
   private arm: HTMLElement;
   private angle = 0; // 0 = down (blocking), 90 = up
   private spin = 0;
@@ -43,7 +55,7 @@ export class Gate {
     this.arm = this.el.querySelector(".arm")!;
     this.set(hold);
     this.angle = hold ? 0 : 90;
-    for (let i = 0; i < 300; i++) this.step(1 / 60); // open mid-flow
+    for (let i = 300; i > 0; i--) this.step(1 / 60, clock - i / 60); // open mid-flow, in step with the others
     this.draw();
   }
 
@@ -66,7 +78,7 @@ export class Gate {
     if (hold !== this.hold && performance.now() - this.clickedAt > 1500) this.set(hold);
   }
 
-  step(dt: number) {
+  step(dt: number, t: number) {
     // Arm: a spring toward its target that bounces off the mechanical stops at 0° and 90°.
     const target = this.hold ? 0 : 90;
     this.spin += (SPRING * (target - this.angle) - DAMP * this.spin) * dt;
@@ -77,16 +89,25 @@ export class Gate {
     }
     // While the arm is still mostly up, blocks reaching it slip through.
     const blocking = this.angle < 45;
+    const belt = conveyor(t);
     // Front-most first, so each block can follow the one ahead.
     this.parts.sort((a, b) => b.x - a.x);
+    let taken = -Infinity;
     this.parts.forEach((q, i) => {
       // A block that can no longer brake before the line carries on instead of snapping back.
       if (blocking && !q.through && q.x + (q.v * q.v) / (2 * BRAKE) > LINE + 0.5) q.through = true;
       let limit = i > 0 ? this.parts[i - 1].x - (W + GAP) : Infinity;
       if (blocking && !q.through) limit = Math.min(limit, LINE);
-      const want = Math.min(SPEED, Math.sqrt(2 * BRAKE * Math.max(0, limit - q.x)));
+      // Each slot holds one block, in order.
+      if (q.slot === null) q.slot = Math.round((belt - q.x) / PITCH);
+      if (q.slot <= taken) q.slot = taken + 1;
+      taken = q.slot;
+      const cruise = Math.max(SPEED * 0.45, Math.min(SPEED * 1.6, SPEED + CATCH * (belt - q.slot * PITCH - q.x)));
+      const room = Math.max(0, limit - q.x);
+      const want = Math.min(cruise, Math.sqrt(2 * BRAKE * room));
       q.v = Math.max(0, q.v + Math.max(-BRAKE * dt, Math.min(ACCEL * dt, want - q.v)));
       q.x = Math.max(q.x, Math.min(q.x + q.v * dt, limit));
+      if (room < 3 && want < cruise) q.slot = null; // held back: rejoin the belt later
       if (q.x + W > STOP) q.through = true;
     });
     this.parts = this.parts.filter((q) => {
@@ -94,14 +115,17 @@ export class Gate {
       q.node.remove();
       return false;
     });
-    this.spawnIn -= dt;
-    const last = this.parts[this.parts.length - 1];
-    if (this.spawnIn <= 0 && (!last || last.x > ENTRY + W + GAP + 1)) {
-      const node = document.createElement("span");
-      node.className = "blk";
-      this.lane.appendChild(node);
-      this.parts.push({ x: ENTRY, v: SPEED * 0.8, through: false, node });
-      this.spawnIn = 0.42 + Math.random() * 0.3;
+    // A new block boards each slot as it passes the entry, if there is room.
+    const slot = Math.floor((belt - ENTRY) / PITCH);
+    if (slot > this.spawned) {
+      this.spawned = slot;
+      const last = this.parts[this.parts.length - 1];
+      if (!last || last.x > ENTRY + W + GAP + 1) {
+        const node = document.createElement("span");
+        node.className = "blk";
+        this.lane.appendChild(node);
+        this.parts.push({ x: belt - slot * PITCH, v: SPEED, through: false, slot, node });
+      }
     }
   }
 
@@ -118,8 +142,9 @@ let prev = 0;
 function frame(now: number) {
   const dt = Math.min(0.05, (now - prev) / 1000);
   prev = now;
+  clock += dt;
   for (const g of gates.values()) {
-    g.step(dt);
+    g.step(dt, clock);
     g.draw();
   }
   raf = requestAnimationFrame(frame);
